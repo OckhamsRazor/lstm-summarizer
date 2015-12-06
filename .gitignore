@@ -1,0 +1,8 @@
+*.sublime-*
+*.pyc
+train/
+valid/
+test/
+model/
+origin/
+2015*/
