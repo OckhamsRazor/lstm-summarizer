@@ -6,6 +6,7 @@ cmd:option('-train', 'train', 'Training data folder path.')
 cmd:option('-valid', 'valid', 'Validation data folder path.')
 cmd:option('-test', 'test', 'Testing data folder path.')
 cmd:option('-enc', 'model/enc.net', 'Sentence encoder path.')
+cmd:option('-models', 'models.out', 'models output folder path')
 local opt = cmd:parse(arg)
 
 local ok,cunn = pcall(require, 'fbcunn')
@@ -109,6 +110,21 @@ function load_data_into_doc(fname)
   return doc
 end
 
+local function load_data_into_state(state)
+  if state.file_step + params.batch_size > #state.filenames then
+    reset_state(state)
+  end
+
+  state.data = {}
+  for fid = 1, params.batch_size do
+    local f = state.filenames[state.file_step+fid]
+    local doc = load_data_into_doc(paths.concat(state.path, f))
+    table.insert(state.data, doc)
+  end
+
+  state.file_step = state.file_step + params.batch_size
+end
+
 local state_train, state_valid, state_test
 local model = {}
 local paramx_enc, paramdx_enc, paramx_dec, paramdx_dec
@@ -166,8 +182,6 @@ local function lstm_attention(x, prev_c, prev_h, m)
   return next_c, next_h
 end
 
--- TODO from here
--- LSTM with attention
 local function create_network()
   local x                = nn.Identity()()
   local y                = nn.Identity()()
@@ -294,6 +308,7 @@ end
 
 local function reset_state(state)
   state.pos = 0
+  state.file_step = 0
   if model ~= nil
     and model.start_s_enc ~= nil
     and model.start_s_dec ~= nil then
@@ -474,36 +489,36 @@ local function _bp(state)
   paramx_dec:add(paramdx_dec:mul(-params.lr))
 end
 
--- TODO from here
--- incomplete function
 local function run_valid()
   reset_state(state_valid)
   g_disable_dropout(model.rnns_enc)
   g_disable_dropout(model.rnns_dec)
-  local len = #state_valid.data / params.batch_size
-  local perp = 0
+
+  local len = #state_valid.filenames / params.batch_size
+  local err = 0
   for i = 1, len do
-    perp = perp + _fp(state_valid)
-    state_valid.pos = state_valid.pos + params.batch_size
+    load_data_into_state(state_valid)
+    err = err + _fp(state_valid)
+    state_valid.file_step = state_valid.file_step + params.batch_size
   end
-  print("Validation set perplexity : " .. g_f3(torch.exp(perp / len)))
+  print("Validation set error : " .. g_f3(torch.exp(err / len)))
   g_enable_dropout(model.rnns_enc)
   g_enable_dropout(model.rnns_dec)
 end
 
--- TODO from here
--- incomplete function
 local function run_test()
   reset_state(state_test)
   g_disable_dropout(model.rnns_enc)
   g_disable_dropout(model.rnns_dec)
-  local len = #state_test.data / params.batch_size
-  local perp = 0
+
+  local len = #state_test.filenames / params.batch_size
+  local err = 0
   for i = 1, len do
-    perp = perp + _fp(state_test)
-    state_test.pos = state_test.pos + params.batch_size
+    load_data_into_state(state_test)
+    err = err + _fp(state_test)
+    state_test.file_step = state_test.file_step + params.batch_size
   end
-  print("Test set perplexity : " .. g_f3(torch.exp(perp / len)))
+  print("Test set error : " .. g_f3(torch.exp(err / len)))
   g_enable_dropout(model.rnns_enc)
   g_enable_dropout(model.rnns_dec)
 end
@@ -526,25 +541,9 @@ local function main()
   local num_of_docs = #train_f
   local epoch_size = torch.floor(num_of_docs / params.batch_size)
 
-  local train_docs = {}
-  local valid_docs = {}
-  local test_docs = {}
-  -- for _, f in pairs(train_f) do
-    -- local doc = load_data_into_doc(paths.concat(opt.train, f))
-    -- table.insert(train_docs, doc)
-    -- if #train_docs == params.batch_size then break end
-  -- end
-  -- for _, f in pairs(valid_f) do
-  --   local doc = load_data_into_doc(paths.concat(opt.valid, f))
-  --   table.insert(valid_docs, doc)
-  -- end
-  -- for _, f in pairs(test_f) do
-  --   local doc = load_data_into_doc(paths.concat(opt.test, f))
-  --   table.insert(test_docs, doc)
-  -- end
-  state_train = {data=train_docs}
-  state_valid = {data=valid_docs}
-  state_test = {data=test_docs}
+  state_train = {data={}, filenames=train_f, path=opt.train}
+  state_valid = {data={}, filenames=valid_f, path=opt.valid}
+  state_test = {data={}, filenames=test_f, path=opt.test}
   setup()
   reset_state(state_train)
 
@@ -553,28 +552,32 @@ local function main()
   local total_cases = 0
   local beginning_time = torch.tic()
   local start_time = torch.tic()
-  print("Starting training.")
+  print("Start training.")
 
-  local perps
-  local file_step = 0
-  -- local file_size = torch.floor(#state_train.data / params.batch_size)
+  local errs
+  -- local file_step = 0
   while epoch < params.max_max_epoch do
-    state_train.data = {}
-    for fid = 1, params.batch_size do
-      local f = train_f[file_step+fid]
-      local doc = load_data_into_doc(paths.concat(opt.train, f))
-      table.insert(state_train.data, doc)
-    end
-    local perp = _fp(state_train)
-    print(perp)
+    -- state_train.data = {}
+    -- for fid = 1, params.batch_size do
+    --   local f = train_f[file_step+fid]
+    --   local doc = load_data_into_doc(paths.concat(opt.train, f))
+    --   table.insert(state_train.data, doc)
+    -- end
+    load_data_into_state(state_train)
+    local err = _fp(state_train)
+    print(err)
 
-    if perps == nil then
-      perps = torch.zeros(epoch_size):add(perp)
+    if errs == nil then
+      errs = torch.zeros(epoch_size):add(err)
     end
-    perps[step % epoch_size + 1] = perp
+    errs[step % epoch_size + 1] = err
     step = step + 1
-    file_step = file_step + params.batch_size
+    -- file_step = file_step + params.batch_size
     _bp(state_train)
+
+    print(run_valid())
+    print(run_test())
+    os.exit()
 
     total_cases = total_cases + params.max_seq_length * params.batch_size
     epoch = step / epoch_size
@@ -582,7 +585,7 @@ local function main()
       local wps = torch.floor(total_cases / torch.toc(start_time))
       local since_beginning = g_d(torch.toc(beginning_time) / 60)
       print('epoch = ' .. g_f3(epoch) ..
-            ', train perp. = ' .. g_f3(torch.exp(perps:mean())) ..
+            ', train error = ' .. g_f3(torch.exp(errs:mean())) ..
             ', wps = ' .. wps ..
             ', encoder dw:norm() = ' .. g_f3(model.norm_dw_enc) ..
             ', decoder dw:norm() = ' .. g_f3(model.norm_dw_dec) ..
@@ -596,35 +599,18 @@ local function main()
       end
 
       torch.save(
-        'models/'..tostring(torch.floor(epoch))..'.enc', model.encoder
+        paths.concat(opt.models, tostring(torch.floor(epoch))..'.enc'),
+        model.encoder
       )
       torch.save(
-        'models/'..tostring(torch.floor(epoch))..'.dec', model.decoder
+        paths.concat(opt.models, tostring(torch.floor(epoch))..'.dec'),
+        model.decoder
       )
     end
     if step % 33 == 0 then
       cutorch.synchronize()
       collectgarbage()
     end
-
-    -- if step == file_size then
-    --   file_step = file_step + 1
-    --   if file_step > #filenames then
-    --     file_step = 1
-    --   end
-
-    --   print('Current file: ' .. filenames[file_step] ..
-    --         ', file no. ' .. file_step ..
-    --         ', current step: ' .. step)
-
-    --   state_train.data = load_data_into_sents(
-    --     paths.concat(opt.train, filenames[file_step])
-    --   )
-    --   state_train.pos = 1
-    --   file_size = file_size + torch.floor(
-    --     #state_train.data / params.batch_size
-    --   )
-    -- end
   end
   run_test()
   print("Training is over.")
