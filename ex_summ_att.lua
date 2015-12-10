@@ -110,20 +110,6 @@ function load_data_into_doc(fname)
   return doc
 end
 
-local function load_data_into_state(state)
-  if state.file_step + params.batch_size > #state.filenames then
-    reset_state(state)
-  end
-
-  state.data = {}
-  for fid = 1, params.batch_size do
-    local f = state.filenames[state.file_step+fid]
-    local doc = load_data_into_doc(paths.concat(state.path, f))
-    table.insert(state.data, doc)
-  end
-
-  state.file_step = state.file_step + params.batch_size
-end
 
 local state_train, state_valid, state_test
 local model = {}
@@ -326,6 +312,21 @@ local function reset_ds()
   end
 end
 
+local function load_data_into_state(state)
+  if state.file_step + params.batch_size > #state.filenames then
+    reset_state(state)
+  end
+
+  state.data = {}
+  for fid = 1, params.batch_size do
+    local f = state.filenames[state.file_step+fid]
+    local doc = load_data_into_doc(paths.concat(state.path, f))
+    table.insert(state.data, doc)
+  end
+
+  state.file_step = state.file_step + params.batch_size
+end
+
 local function get_embeddings(sents, batch_size)
   local embs
   -- pad document if too short
@@ -523,8 +524,16 @@ local function run_test()
   g_enable_dropout(model.rnns_dec)
 end
 
+function mk_clean_dir(dirname)
+  if paths.filep(dirname) or paths.dir(dirname) ~= nil then
+    paths.rmall(dirname, 'yes')
+  end
+  paths.mkdir(dirname)
+end
+
 local function main()
   g_init_gpu(opt.gpuidx)
+  mk_clean_dir(opt.models)
 
   local train_f = {}
   local valid_f = {}
@@ -565,7 +574,6 @@ local function main()
     -- end
     load_data_into_state(state_train)
     local err = _fp(state_train)
-    print(err)
 
     if errs == nil then
       errs = torch.zeros(epoch_size):add(err)
@@ -574,10 +582,6 @@ local function main()
     step = step + 1
     -- file_step = file_step + params.batch_size
     _bp(state_train)
-
-    print(run_valid())
-    print(run_test())
-    os.exit()
 
     total_cases = total_cases + params.max_seq_length * params.batch_size
     epoch = step / epoch_size
