@@ -1,8 +1,9 @@
 *.sublime-*
 *.pyc
+*.log
 train/
 valid/
 test/
-model/
+model*/
 origin/
 2015*/
